@@ -1,9 +1,7 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <title>AES-256 Encryption/Decryption with Compressed Images</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.0.4/pako.min.js"></script>
+    <title>AES Encryption/Decryption</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
       body {
@@ -83,11 +81,11 @@
   </head>
   <body>
     <div class="container">
-      <h2>AES-256 Encryption/Decryption with Compressed Images</h2>
+      <h2>AES Encryption/Decryption</h2>
       <div class="form-group">
         <label for="inputText">Input Text or Image:</label>
         <textarea id="inputText" placeholder="Enter text or paste encrypted string"></textarea>
-        <input type="file" id="imageInput" accept="image/*" onchange="encodeImage()">
+        <input type="file" id="imageInput" accept="image/*">
       </div>
       <div class="form-group">
         <label for="key">Key:</label>
@@ -101,7 +99,7 @@
         </select>
       </div>
       <div class="button-group">
-        <button onclick="processData()">Process</button>
+        <button id="processButton">Process</button>
       </div>
       <div class="form-group">
         <label for="outputText">Result:</label>
@@ -110,96 +108,125 @@
       <img id="outputImage" style="display: none;" />
     </div>
     <script>
-      function padKey(key) {
-        return key.padEnd(32, '0');
+      async function generateKey(password, salt) {
+        const encoder = new TextEncoder();
+        const keyMaterial = await crypto.subtle.importKey('raw', encoder.encode(password), {
+          name: 'PBKDF2'
+        }, false, ['deriveKey']);
+        return await crypto.subtle.deriveKey({
+          name: 'PBKDF2',
+          salt: salt,
+          iterations: 100000,
+          hash: 'SHA-256'
+        }, keyMaterial, {
+          name: 'AES-GCM',
+          length: 256
+        }, true, ['encrypt', 'decrypt']);
       }
-
-      function encodeImage() {
-        const file = document.getElementById('imageInput').files[0];
-        if (file) {
-          const reader = new FileReader();
-          reader.onload = function(event) {
-            compressImage(event.target.result);
-          };
-          reader.readAsDataURL(file);
+      async function encryptData(data, password) {
+        const salt = crypto.getRandomValues(new Uint8Array(16));
+        const key = await generateKey(password, salt);
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const encrypted = await crypto.subtle.encrypt({
+          name: 'AES-GCM',
+          iv
+        }, key, new TextEncoder().encode(data));
+        return btoa(String.fromCharCode(...salt)) + '.' + btoa(String.fromCharCode(...iv)) + '.' + btoa(String.fromCharCode(...new Uint8Array(encrypted)));
+      }
+      async function decryptData(encryptedText, password) {
+        try {
+          const [saltBase64, ivBase64, dataBase64] = encryptedText.split('.');
+          if (!saltBase64 || !ivBase64 || !dataBase64) {
+            throw new Error("Invalid encrypted data format");
+          }
+          const salt = new Uint8Array(atob(saltBase64).split('').map(c => c.charCodeAt(0)));
+          const iv = new Uint8Array(atob(ivBase64).split('').map(c => c.charCodeAt(0)));
+          const encryptedData = new Uint8Array(atob(dataBase64).split('').map(c => c.charCodeAt(0)));
+          const key = await generateKey(password, salt);
+          try {
+            const decrypted = await crypto.subtle.decrypt({
+              name: 'AES-GCM',
+              iv
+            }, key, encryptedData);
+            return new TextDecoder().decode(decrypted);
+          } catch (error) {
+            throw new Error("Incorrect key or corrupted data");
+          }
+        } catch (error) {
+          throw error;
         }
       }
 
-      function compressImage(base64) {
-        const img = new Image();
-        img.src = base64;
-        img.onload = function() {
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
-          const maxSize = 500;
-          let width = img.width;
-          let height = img.height;
-          if (width > maxSize || height > maxSize) {
-            if (width > height) {
-              height *= maxSize / width;
-              width = maxSize;
-            } else {
-              width *= maxSize / height;
-              height = maxSize;
+      function compressImage(file, callback) {
+        const reader = new FileReader();
+        reader.onload = function(event) {
+          const img = new Image();
+          img.src = event.target.result;
+          img.onload = function() {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const maxSize = 500;
+            let width = img.width;
+            let height = img.height;
+            if (width > maxSize || height > maxSize) {
+              if (width > height) {
+                height *= maxSize / width;
+                width = maxSize;
+              } else {
+                width *= maxSize / height;
+                height = maxSize;
+              }
             }
-          }
-          canvas.width = width;
-          canvas.height = height;
-          ctx.drawImage(img, 0, 0, width, height);
-          document.getElementById('inputText').value = canvas.toDataURL('image/jpeg', 0.7);
+            canvas.width = width;
+            canvas.height = height;
+            ctx.drawImage(img, 0, 0, width, height);
+            canvas.toBlob(blob => {
+              const reader = new FileReader();
+              reader.onloadend = function() {
+                callback(reader.result);
+              };
+              reader.readAsDataURL(blob);
+            }, 'image/webp', 0.7);
+          };
         };
+        reader.readAsDataURL(file);
       }
-
-      function processData() {
+      document.getElementById('imageInput').addEventListener('change', function() {
+        compressImage(this.files[0], (compressedBase64) => {
+          document.getElementById('inputText').value = compressedBase64;
+        });
+      });
+      document.getElementById('processButton').addEventListener('click', async function() {
         const inputText = document.getElementById('inputText').value;
-        let key = document.getElementById('key').value;
+        const password = document.getElementById('key').value;
         const operation = document.getElementById('operation').value;
         const outputText = document.getElementById('outputText');
         const outputImage = document.getElementById('outputImage');
-        if (!inputText || !key) {
-          alert('Please provide both text/image and key');
+        if (!inputText || !password) {
+          alert('Please enter text/image and key');
           return;
         }
-        key = padKey(key);
         try {
           if (operation === 'encrypt') {
-            if (!inputText.trim()) {
-              alert("Error: Input text is empty or invalid.");
-              return;
-            }
-            const compressedBytes = pako.deflate(inputText);
-            const compressedBase64 = btoa(String.fromCharCode(...compressedBytes));
-            const encrypted = CryptoJS.AES.encrypt(compressedBase64, key).toString();
-            outputText.value = encrypted;
+            outputText.value = await encryptData(inputText, password);
             outputImage.style.display = 'none';
           } else {
-            const decryptedBytes = CryptoJS.AES.decrypt(inputText, key);
-            const decryptedStr = decryptedBytes.toString(CryptoJS.enc.Utf8);
-            if (!decryptedStr) {
-              alert("Decryption failed: Incorrect key or corrupted data.");
-              return;
-            }
-            try {
-              const binaryData = Uint8Array.from(atob(decryptedStr), c => c.charCodeAt(0));
-              const decompressed = pako.inflate(binaryData, {
-                to: 'string'
-              });
-              document.getElementById('outputText').value = decompressed;
-              outputText.value = decompressed;
-              if (decompressed.startsWith('data:image')) {
-                outputImage.src = decompressed;
-                outputImage.style.display = 'block';
-              } else {
-                outputImage.style.display = 'none';
-              }
-            } catch (error) {
-              alert("Error during decompression: " + error.message);
+            const decrypted = await decryptData(inputText, password);
+            outputText.value = decrypted;
+            if (decrypted.startsWith('data:image')) {
+              outputImage.src = decrypted;
+              outputImage.style.display = 'block';
+            } else {
+              outputImage.style.display = 'none';
             }
           }
         } catch (error) {
-          alert('An error occurred: ' + error.message);
+          console.error('Error:', error);
+          alert('An error occurred: ' + (error.message || 'Unknown error while processing data'));
+          outputText.value = '';
+          outputImage.style.display = 'none';
         }
-      }
+      });
     </script>
   </body>
 </html>
